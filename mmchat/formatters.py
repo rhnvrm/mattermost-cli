@@ -213,6 +213,28 @@ def format_posts_json(
                 {"name": f.get("name", ""), "size": f.get("size", 0)}
                 for f in post["metadata"]["files"]
             ]
+        # Bot/webhook detection
+        props = post.get("props", {})
+        if props.get("from_webhook") == "true":
+            entry["is_bot"] = True
+            webhook_name = props.get("override_username", "")
+            if webhook_name:
+                entry["bot_name"] = webhook_name
+            # Extract text from slack attachments when message is empty
+            if not entry["message"] and props.get("attachments"):
+                parts = []
+                for att in props["attachments"]:
+                    if att.get("pretext"):
+                        parts.append(att["pretext"])
+                    if att.get("text"):
+                        parts.append(att["text"])
+                    for field in att.get("fields", []):
+                        if field.get("title"):
+                            parts.append(field["title"])
+                        if field.get("value"):
+                            parts.append(field["value"][:200])
+                if parts:
+                    entry["message"] = "\n".join(parts)[:500]
         if channel_name:
             entry["channel"] = channel_name
         enriched.append(entry)

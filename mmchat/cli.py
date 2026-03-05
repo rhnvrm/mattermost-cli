@@ -255,6 +255,176 @@ def logout():
 
 
 @main.command()
+@click.option("--since", "since", default="6h", show_default=True, help="Look back period (1h, 6h, 1d, 0 for all).")
+@pass_state
+def overview(state, since):
+    """Get oriented: mentions, unread, and active channels in one call.
+
+    This is the command to run first. Returns a structured summary of
+    what needs attention, sorted by priority.
+    """
+    ctx = get_context(state)
+    resolver = Resolver(ctx.driver, ctx.user_id)
+
+    since_ms = None
+    if since and since != "0":
+        try:
+            since_ms = parse_since(since)
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(EXIT_ERROR)
+
+    # 1. Mentions
+    mentions_list = []
+    for team in ctx.teams:
+        terms = f"@{ctx.username}"
+        if since_ms:
+            since_date = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
+            terms += f" after:{since_date.strftime('%Y-%m-%d')}"
+        result = ctx.driver.posts.search_for_team_posts(team.id, {"terms": terms, "is_or_search": False})
+        for pid in result.get("order", []):
+            if pid in result.get("posts", {}):
+                mentions_list.append((result["posts"][pid], team.display_name))
+
+    # Deduplicate mentions
+    seen_ids = set()
+    mentions_deduped = []
+    for p, t in sorted(mentions_list, key=lambda x: x[0].get("create_at", 0), reverse=True):
+        if p["id"] not in seen_ids:
+            seen_ids.add(p["id"])
+            mentions_deduped.append((p, t))
+
+    # Resolve mention authors and root context
+    mention_posts = [p for p, _ in mentions_deduped]
+    all_author_ids = list({p["user_id"] for p in mention_posts})
+    user_map = resolver.resolve_users(all_author_ids) if all_author_ids else {}
+    authors = {uid: f"@{info['username']}" for uid, info in user_map.items()}
+
+    mention_entries = []
+    for p, team_name in mentions_deduped:
+        uid = p.get("user_id", "")
+        ch = resolver.resolve_channel(p.get("channel_id", ""))
+        root_id = p.get("root_id", "")
+        entry = {
+            "author": authors.get(uid, "unknown"),
+            "message": p.get("message", "")[:200],
+            "created_at": _iso_ts(p.get("create_at", 0)),
+            "channel": ch["display_name"],
+            "thread_id": root_id if root_id else p["id"],
+            "is_reply": bool(root_id),
+        }
+        if root_id:
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    root_post = ctx.driver.posts.get_post(root_id)
+                ruid = root_post.get("user_id", "")
+                if ruid not in user_map:
+                    extra = resolver.resolve_users([ruid])
+                    user_map.update(extra)
+                    authors.update({uid: f"@{info['username']}" for uid, info in extra.items()})
+                entry["root_message"] = root_post.get("message", "")[:200]
+                entry["root_author"] = authors.get(ruid, "unknown")
+            except Exception:
+                pass
+        if p.get("props", {}).get("from_webhook") == "true":
+            entry["is_bot"] = True
+        mention_entries.append(entry)
+
+    # 2. Unread channels (reuse unread logic)
+    unreads = []
+    for team in ctx.teams:
+        channels_raw = ctx.driver.channels.get_channels_for_user(ctx.user_id, team.id)
+        members_raw = ctx.driver.channels.get_channel_members_for_user(ctx.user_id, team.id)
+        member_map = {m["channel_id"]: m for m in members_raw}
+
+        for ch in channels_raw:
+            member = member_map.get(ch["id"])
+            if not member:
+                continue
+            notify = member.get("notify_props", {})
+            if notify.get("mark_unread") == "mention":
+                continue
+            total_root = ch.get("total_msg_count_root")
+            seen_root = member.get("msg_count_root")
+            if total_root is not None and seen_root is not None:
+                unread_count = max(0, total_root - seen_root)
+            else:
+                unread_count = max(0, (ch.get("total_msg_count", 0) or 0) - (member.get("msg_count", 0) or 0))
+            if unread_count == 0:
+                continue
+            info = resolver.format_channel(ch)
+            ch_type = ch.get("type", "")
+            unreads.append({
+                "channel": info["display_name"],
+                "ref": ch["id"] if ch_type in ("D", "G") else (info.get("name") or ch["id"]),
+                "type": TYPE_LABELS.get(ch_type, ch_type),
+                "unread": unread_count,
+                "last_post_at": _iso_ts(ch.get("last_post_at", 0)),
+            })
+    unreads.sort(key=lambda u: -u["unread"])
+
+    # 3. Active channels (with posts since cutoff)
+    active = []
+    if since_ms:
+        seen_ch = set()
+        for team in ctx.teams:
+            channels_raw = ctx.driver.channels.get_channels_for_user(ctx.user_id, team.id)
+            for ch in channels_raw:
+                if ch["id"] in seen_ch:
+                    continue
+                seen_ch.add(ch["id"])
+                if (ch.get("last_post_at", 0) or 0) >= since_ms:
+                    info = resolver.format_channel(ch)
+                    ch_type = ch.get("type", "")
+                    active.append({
+                        "channel": info["display_name"],
+                        "ref": ch["id"] if ch_type in ("D", "G") else (info.get("name") or ch["id"]),
+                        "type": TYPE_LABELS.get(ch_type, ch_type),
+                        "last_post_at": _iso_ts(ch.get("last_post_at", 0)),
+                    })
+        active.sort(key=lambda c: c["last_post_at"], reverse=True)
+
+    overview_data = {
+        "since": since,
+        "mentions": mention_entries,
+        "unread": unreads,
+    }
+    if active:
+        overview_data["active_channels"] = active
+
+    if not state.human:
+        click.echo(json.dumps(overview_data, indent=2))
+    else:
+        lines = [f"# Overview (last {since})\n"]
+
+        lines.append(f"## Mentions ({len(mention_entries)})\n")
+        if mention_entries:
+            for m in mention_entries:
+                bot = " [bot]" if m.get("is_bot") else ""
+                lines.append(f"**{m['author']}**{bot} in #{m['channel']} ({m['created_at']})")
+                if m.get("root_message"):
+                    lines.append(f"  re: {m['root_author']}: {m['root_message'][:80]}")
+                lines.append(f"  {m['message'][:80]}")
+                lines.append("")
+        else:
+            lines.append("No mentions.\n")
+
+        lines.append(f"## Unread ({len(unreads)} channels)\n")
+        if unreads:
+            for u in unreads:
+                lines.append(f"  {u['channel']:40s} {u['unread']:4d} unread  ({u['type']})")
+        else:
+            lines.append("All caught up.\n")
+
+        if active:
+            lines.append(f"\n## Active Channels ({len(active)})\n")
+            for c in active:
+                lines.append(f"  {c['channel']:40s} last: {c['last_post_at']}  ({c['type']})")
+
+        click.echo("\n".join(lines).rstrip())
+
+
+@main.command()
 @click.argument("channel")
 @pass_state
 def channel(state, channel):
@@ -476,6 +646,12 @@ def _enrich_posts(
                 {"name": f.get("name", ""), "size": f.get("size", 0)}
                 for f in p["metadata"]["files"]
             ]
+        # Bot/webhook detection
+        if p.get("props", {}).get("from_webhook") == "true":
+            entry["is_bot"] = True
+            webhook_name = p.get("props", {}).get("override_username", "")
+            if webhook_name:
+                entry["bot_name"] = webhook_name
         # Reactions summary
         reactions = p.get("metadata", {}).get("reactions")
         if reactions:
