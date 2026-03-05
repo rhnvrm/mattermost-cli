@@ -25,21 +25,21 @@ Use `--since 0` to disable the time filter (all results).
 A quick way to catch up:
 
 ```bash
-# 1. What needs attention?
-mm mentions
+# 1. Get the full picture in one call
+mm overview --since 12h
 
-# 2. Check thread sizes before diving in
-#    (look at reply_count to decide if you need --limit)
+# 2. Read mentions (root context tells you what each is about)
+mm mentions --since 12h
 
 # 3. Read threads that matter
 mm thread <thread_id>
 mm thread <thread_id> --limit 5    # Big thread? Just the recent end
 
-# 4. Scan unread channels
-mm unread
+# 4. Scan busy channels with thread view
+mm messages <ref> --threads --since 12h
 
-# 5. Read messages in busy channels
-mm messages <ref> --since today
+# 5. Dive into specific threads from the index
+mm messages <ref> --since 12h       # Or flat view for quiet channels
 ```
 
 ## Piping with jq

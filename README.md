@@ -10,17 +10,16 @@ uvx --from mattermost-cli mm --help
 
 # Or install globally
 pip install mattermost-cli
-mm --help
 ```
 
 ## Setup
 
 ```bash
 # Interactive login (password + MFA)
-mm login
+mm login --url https://chat.example.com
 
 # Or with a Personal Access Token
-mm login --token <your-pat>
+mm login --url https://chat.example.com --token <your-pat>
 
 # Verify
 mm whoami
@@ -29,23 +28,54 @@ mm whoami
 ## Usage
 
 ```bash
-# List channels
-mm channels
+# Get oriented (mentions + unread + active channels in one call)
+mm overview
 
-# Show unread messages
-mm unread
-
-# Read messages from a channel
+# Read messages
 mm messages general
 mm messages general --since 1h
-mm messages @username          # DM with a user
+mm messages general --threads       # thread index view
+mm messages @alice                  # DM with a user
 
-# Read a thread
-mm thread <post-id>
+# Threads
+mm thread <post-id>                 # root + last 9 replies
+mm thread <post-id> --limit 0      # full thread
 
-# Search
+# Search and mentions
 mm search "deployment issue"
-mm mentions
+mm mentions                         # @-mentions in last 24h
+
+# Channel info
+mm channel general                  # purpose, members, pinned count
+mm channels --since 6h              # recently active channels
+mm unread                           # channels with unread messages
+mm pinned general                   # pinned posts
+mm members general                  # who's in the channel
+
+# People
+mm user @alice                      # profile, status, timezone
+```
+
+## JSON Output
+
+All commands output JSON by default. Key fields:
+
+- **`thread_id`** on every post - pass to `mm thread`
+- **`ref`** on channel entries - pass to `mm messages`
+- **`is_bot`** / **`bot_name`** - webhook/bot posts flagged automatically
+- **`root`** on reply-mentions - the original message being replied to
+- **`reactions`** - emoji counts like `{"+1": 3}`
+
+Webhook posts automatically extract alert content from Slack-format attachments.
+
+Add `--human` for readable markdown output instead.
+
+## Agent Skill
+
+Install as a coding agent skill:
+
+```bash
+npx skills add rhnvrm/mattermost-cli
 ```
 
 ## Options
