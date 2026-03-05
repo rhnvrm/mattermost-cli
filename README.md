@@ -1,15 +1,15 @@
-# mmchat
+# mattermost-cli
 
-Read-only Mattermost CLI for humans and LLMs.
+Mattermost CLI for humans and agents.
 
 ## Install
 
 ```bash
 # via uvx (recommended)
-uvx mmchat --help
+uvx mattermost-cli --help
 
 # or pip
-pip install mmchat
+pip install mattermost-cli
 ```
 
 ## Setup

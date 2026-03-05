@@ -4,7 +4,7 @@ Instructions for AI agents working on this repository.
 
 ## Overview
 
-mmchat is a read-only Mattermost CLI. Primary consumers are AI agents (JSON default) and humans (`--human` flag). Published to PyPI as `mmchat`, CLI command is `mm`.
+mattermost-cli is a Mattermost CLI for humans and agents. JSON output by default for agent consumption, `--human` flag for markdown. Published to PyPI as `mattermost-cli`, CLI command is `mm`.
 
 ## Architecture
 
@@ -94,4 +94,4 @@ uvx mmchat
 pip install mmchat
 ```
 
-The PyPI package name is `mmchat` (not `mm-cli`, which was taken). The CLI command is `mm`.
+The PyPI package name is `mattermost-cli`. The CLI command is `mm`.

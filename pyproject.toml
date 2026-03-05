@@ -1,11 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mmchat"
-version = "0.1.0"
-description = "Read-only Mattermost CLI for humans and LLMs"
+name = "mattermost-cli"
+dynamic = ["version"]
+description = "Mattermost CLI for humans and agents"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
@@ -39,6 +39,12 @@ testpaths = ["tests"]
 mm = "mmchat.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/rhnvrm/mmchat"
-Repository = "https://github.com/rhnvrm/mmchat"
-Issues = "https://github.com/rhnvrm/mmchat/issues"
+Homepage = "https://github.com/rhnvrm/mattermost-cli"
+Repository = "https://github.com/rhnvrm/mattermost-cli"
+Issues = "https://github.com/rhnvrm/mattermost-cli/issues"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "mmchat/_version.py"

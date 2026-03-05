@@ -1,3 +1,6 @@
-"""mmchat - Read-only Mattermost CLI for humans and LLMs."""
+"""mattermost-cli - Mattermost CLI for humans and agents."""
 
-__version__ = "0.1.0"
+try:
+    from mmchat._version import __version__
+except ImportError:
+    __version__ = "0.0.0-dev"
