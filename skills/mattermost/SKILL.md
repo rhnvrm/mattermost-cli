@@ -9,20 +9,38 @@ Read and search Mattermost from the command line. JSON output by default, `--hum
 
 ## Setup
 
+Check if `mm` is already available:
+
 ```bash
-# Install
-uvx --from mattermost-cli mm --help
-
-# Authenticate (one-time)
-mm login --url https://your.mattermost.server
-# or with a Personal Access Token:
-mm login --url https://your.mattermost.server --token YOUR_TOKEN
-
-# Verify
 mm whoami
 ```
 
-Config is stored at `$HOME/.config/mm/config.json`. Environment variables `MATTERMOST_URL` and `MATTERMOST_TOKEN` also work.
+If that works, skip to "Start here" below.
+
+If `mm` is not found, install it. Pick whichever works in your environment:
+
+```bash
+pip install mattermost-cli    # adds `mm` to PATH
+# or
+pipx install mattermost-cli   # isolated global install
+# or
+uvx --from mattermost-cli mm  # run without installing (needs uvx)
+```
+
+Then authenticate (one-time):
+
+```bash
+mm login --url https://your.mattermost.server
+mm whoami   # verify
+```
+
+The login command will prompt for credentials interactively. If your server supports Personal Access Tokens (Profile > Security > Personal Access Tokens in the Mattermost UI), you can skip the prompt:
+
+```bash
+mm login --url https://your.mattermost.server --token YOUR_TOKEN
+```
+
+For environment variables, multiple servers, and troubleshooting, see [references/setup.md](references/setup.md).
 
 ## Start here: `mm overview`
 
@@ -105,5 +123,6 @@ Bot posts from webhooks automatically extract alert content from Slack-format at
 
 ## Further reading
 
-- [references/workflows.md](references/workflows.md) - multi-step patterns: morning triage, incident investigation, channel discovery
+- [references/scenarios.md](references/scenarios.md) - real use cases: "what did I miss?", "summarize this channel", "is this resolved?", "find that thing someone said"
+- [references/workflows.md](references/workflows.md) - command sequences: morning triage, incident investigation, channel discovery
 - [references/commands.md](references/commands.md) - full command reference with all options and flags

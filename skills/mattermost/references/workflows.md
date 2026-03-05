@@ -1,6 +1,6 @@
 # Workflows
 
-Common multi-step patterns using `mm`. Each workflow is a sequence of commands - pipe JSON output through `jq` or read it directly depending on your tooling.
+Common multi-step patterns using `mm`. All commands output JSON by default.
 
 ## Morning triage
 
@@ -37,12 +37,12 @@ mm search "from:alice deployment"
 mm thread <thread_id> --limit 0
 
 # 3. Check the alert channel for related bot alerts
-mm messages infra-alerts --since 2h
+mm messages alerts --since 2h
 #    Bot posts are flagged with is_bot/bot_name
 #    Webhook content (FIRING/RESOLVED) is extracted automatically
 
 # 4. See who's aware and available
-mm members infra-alerts
+mm members alerts
 mm user @oncall-person
 ```
 
@@ -54,19 +54,18 @@ Dropped into a channel you don't know? Build context before reading messages:
 
 ```bash
 # 1. What's this channel for?
-mm channel kite-techsup
-#    Returns: purpose, header, member count (61), pinned count (11)
+mm channel engineering
+#    Returns: purpose, header, member count, pinned count
 
 # 2. What decisions have been made?
-mm pinned kite-techsup
+mm pinned engineering
 #    Pinned posts are the channel's institutional memory
 
 # 3. Who's here?
-mm members kite-techsup
-#    63 members, sorted by online status
+mm members engineering
 
 # 4. Now read recent activity with thread context
-mm messages kite-techsup --threads --since 1d
+mm messages engineering --threads --since 1d
 #    "6 active threads, biggest has 66 replies"
 ```
 
@@ -81,21 +80,21 @@ mm thread abc123 --limit 0
 # Later, check for new replies
 mm thread abc123 --since 2h
 
-# See who reacted (reactions appear in thread output)
-# "+1": 4, "white_check_mark": 1 suggests resolution
+# Reactions in thread output hint at resolution
+# "+1": 4, "white_check_mark": 1 suggests the issue is resolved
 ```
 
 ## Finding what someone said
 
 ```bash
 # Search their messages
-mm search "from:dhanush autoslicing"
+mm search "from:alice deployment config"
 
 # Or browse their DMs with you
-mm messages @dhanush --since 1w
+mm messages @alice --since 1w
 
 # Check their profile (timezone helps for scheduling)
-mm user @dhanush
+mm user @alice
 ```
 
 ## Channel discovery
@@ -110,8 +109,7 @@ mm channels --since 6h
 mm channels --type private --since 1d
 mm channels --type dm --since 1d
 
-# Search for a channel by topic
-#   (use channel names from the channels list)
+# Get details on a specific channel
 mm channel <name>
 ```
 
@@ -120,12 +118,12 @@ mm channel <name>
 Alert and CI channels are mostly bot traffic. The CLI extracts content from Slack-format webhook attachments automatically, so you see the actual alert text instead of empty messages:
 
 ```bash
-mm messages infra-alerts --limit 20
-# Bot posts show: is_bot: true, bot_name: "alertmatter"
+mm messages alerts --limit 20
+# Bot posts show: is_bot: true, bot_name: "prometheus-alerts"
 # Alert content: "FIRING: Host out of disk space..."
 # Human responses: is_bot absent, regular messages
 
-mm messages infra-alerts --threads
+mm messages alerts --threads
 # Thread view helps separate: "bot fired alert, 2 humans discussed, marked resolved"
 ```
 
