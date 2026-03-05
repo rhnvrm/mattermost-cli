@@ -312,10 +312,17 @@ def unread(state):
             if not member:
                 continue
 
-            total = ch.get("total_msg_count", 0) or 0
-            seen = member.get("msg_count", 0) or 0
-            unread_count = max(0, total - seen)
-            mention_count = member.get("mention_count", 0) or 0
+            # Use root counts (matches CRT-enabled UI) with fallback to total
+            total_root = ch.get("total_msg_count_root")
+            seen_root = member.get("msg_count_root")
+            if total_root is not None and seen_root is not None:
+                unread_count = max(0, total_root - seen_root)
+                mention_count = member.get("mention_count_root", 0) or 0
+            else:
+                total = ch.get("total_msg_count", 0) or 0
+                seen = member.get("msg_count", 0) or 0
+                unread_count = max(0, total - seen)
+                mention_count = member.get("mention_count", 0) or 0
 
             if unread_count == 0 and mention_count == 0:
                 continue
