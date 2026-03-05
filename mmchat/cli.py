@@ -23,6 +23,8 @@ from .client import (
 )
 from .config import ConfigError, clear_config, get_credentials, save_config
 from .formatters import (
+    TYPE_LABELS,
+    _iso_ts,
     format_channels_json,
     format_channels_md,
     format_post_md,
@@ -253,6 +255,67 @@ def logout():
 
 
 @main.command()
+@click.argument("channel")
+@pass_state
+def channel(state, channel):
+    """Show info about a single channel.
+
+    CHANNEL can be a name, @username for DMs, or a channel ID.
+    """
+    ctx = get_context(state)
+    resolver = Resolver(ctx.driver, ctx.user_id)
+
+    ch = _resolve_channel(ctx, resolver, channel)
+    ch_info = resolver.format_channel(ch)
+
+    # Get member count
+    try:
+        stats = ctx.driver.client.get(f"/channels/{ch['id']}/stats")
+        member_count = stats.get("member_count", 0)
+    except Exception:
+        member_count = None
+
+    # Count pinned posts
+    try:
+        pinned_result = ctx.driver.client.get(f"/channels/{ch['id']}/pinned")
+        pinned_count = len(pinned_result.get("order", []))
+    except Exception:
+        pinned_count = 0
+
+    info = {
+        "id": ch["id"],
+        "name": ch_info["display_name"],
+        "type": TYPE_LABELS.get(ch.get("type", ""), ch.get("type", "")),
+        "purpose": ch.get("purpose", ""),
+        "header": ch.get("header", ""),
+        "last_post_at": _iso_ts(ch.get("last_post_at", 0)),
+        "created_at": _iso_ts(ch.get("create_at", 0)),
+        "pinned_count": pinned_count,
+    }
+    if member_count is not None:
+        info["member_count"] = member_count
+
+    # Remove empty strings
+    info = {k: v for k, v in info.items() if v or v == 0}
+
+    if not state.human:
+        click.echo(json.dumps(info, indent=2))
+    else:
+        lines = [f"## #{info['name']}"]
+        lines.append(f"Type: {info.get('type', '?')}")
+        if info.get("purpose"):
+            lines.append(f"Purpose: {info['purpose']}")
+        if info.get("header"):
+            lines.append(f"Header: {info['header']}")
+        if member_count is not None:
+            lines.append(f"Members: {member_count}")
+        lines.append(f"Pinned: {pinned_count}")
+        lines.append(f"Last post: {info.get('last_post_at', '?')}")
+        lines.append(f"Created: {info.get('created_at', '?')}")
+        click.echo("\n".join(lines))
+
+
+@main.command()
 @click.option("--type", "ch_type", type=click.Choice(["public", "private", "dm", "group"]), help="Filter by channel type.")
 @click.option("--since", "since", default=None, help="Only channels with posts since (1h, 6h, 1d, today).")
 @pass_state
@@ -480,11 +543,13 @@ def _resolve_channel(ctx: MMContext, resolver: Resolver, channel_arg: str) -> di
 @click.argument("channel")
 @click.option("--since", "since", default=None, help="Show messages since (1h, 2d, today, 2026-03-05).")
 @click.option("--limit", "limit", default=30, type=int, show_default=True, help="Max messages (max 200).")
+@click.option("--threads", is_flag=True, default=False, help="Group by thread: show root + last reply + reply count.")
 @pass_state
-def messages(state, channel, since, limit):
+def messages(state, channel, since, limit, threads):
     """Read messages from a channel.
 
     CHANNEL can be a channel name, @username (for DMs), or a channel ID.
+    Use --threads to see a thread index instead of flat messages.
     """
     ctx = get_context(state)
     resolver = Resolver(ctx.driver, ctx.user_id)
@@ -516,6 +581,66 @@ def messages(state, channel, since, limit):
     author_ids = list({p["user_id"] for p in posts})
     user_map = resolver.resolve_users(author_ids)
     authors = {uid: f"@{info['username']}" for uid, info in user_map.items()}
+
+    if threads:
+        # Group messages by thread and show a summary index
+        thread_map: dict[str, list[dict]] = {}
+        for p in posts:
+            tid = p.get("root_id") or p["id"]
+            thread_map.setdefault(tid, []).append(p)
+
+        thread_summaries = []
+        for tid, tposts in thread_map.items():
+            # Always fetch root post for accurate reply_count
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    root = ctx.driver.posts.get_post(tid)
+                root_uid = root.get("user_id", "")
+                if root_uid not in user_map:
+                    extra = resolver.resolve_users([root_uid])
+                    user_map.update(extra)
+                    authors.update({uid: f"@{info['username']}" for uid, info in extra.items()})
+            except Exception:
+                # Fallback to what we have in our window
+                root = next((tp for tp in tposts if not tp.get("root_id")), tposts[0])
+
+            last_reply = tposts[-1] if tposts[-1]["id"] != root["id"] else None
+            reply_count = root.get("reply_count") or max(0, len(tposts) - 1)
+
+            summary = {
+                "thread_id": tid,
+                "root_author": authors.get(root.get("user_id", ""), "unknown"),
+                "root_message": root.get("message", "")[:200],
+                "root_created_at": _iso_ts(root.get("create_at", 0)),
+                "reply_count": reply_count,
+                "channel": ch_info["display_name"],
+            }
+            if last_reply:
+                summary["last_reply_author"] = authors.get(last_reply.get("user_id", ""), "unknown")
+                summary["last_reply_message"] = last_reply.get("message", "")[:200]
+                summary["last_reply_at"] = _iso_ts(last_reply.get("create_at", 0))
+            thread_summaries.append(summary)
+
+        # Sort by last activity (most recent first)
+        thread_summaries.sort(
+            key=lambda t: t.get("last_reply_at", t["root_created_at"]),
+            reverse=True,
+        )
+
+        if not state.human:
+            click.echo(json.dumps(thread_summaries, indent=2))
+        else:
+            lines = [f"## #{ch_info['display_name']} - {len(thread_summaries)} active threads\n"]
+            for t in thread_summaries:
+                rc = t["reply_count"]
+                lines.append(f"**{t['root_author']}** ({t['root_created_at']}) [{rc} replies]")
+                lines.append(f"  {t['root_message'][:80]}")
+                if t.get("last_reply_author"):
+                    lines.append(f"  > last: {t['last_reply_author']} ({t['last_reply_at']}): {t.get('last_reply_message', '')[:60]}")
+                lines.append(f"  thread_id: {t['thread_id']}")
+                lines.append("")
+            click.echo("\n".join(lines).rstrip())
+        return
 
     if not state.human:
         click.echo(format_posts_json(posts, authors, ch_info["display_name"]))
@@ -635,8 +760,35 @@ def mentions(state, since, limit):
     for p in posts_only:
         resolver.resolve_channel(p.get("channel_id", ""))
 
+    # For reply mentions, fetch root post context so agent knows what "this" refers to
+    root_context: dict[str, dict] = {}
+    root_ids = {p.get("root_id") for p in posts_only if p.get("root_id")}
+    for rid in root_ids:
+        try:
+            root_post = ctx.driver.posts.get_post(rid)
+            root_uid = root_post.get("user_id", "")
+            if root_uid not in user_map:
+                extra = resolver.resolve_users([root_uid])
+                user_map.update(extra)
+                authors.update({uid: f"@{info['username']}" for uid, info in extra.items()})
+            root_context[rid] = {
+                "author": authors.get(root_uid, "unknown"),
+                "message": root_post.get("message", "")[:200],
+                "created_at": _iso_ts(root_post.get("create_at", 0)),
+            }
+        except Exception:
+            pass
+
+    enriched = _enrich_posts(posts_only, authors, resolver, team_by_post)
+    # Attach root context to reply mentions
+    for entry in enriched:
+        if entry["is_reply"]:
+            rc = root_context.get(entry["thread_id"])
+            if rc:
+                entry["root"] = rc
+
     if not state.human:
-        click.echo(json.dumps(_enrich_posts(posts_only, authors, resolver, team_by_post), indent=2))
+        click.echo(json.dumps(enriched, indent=2))
     else:
         # Group by channel
         by_channel = defaultdict(list)
@@ -649,6 +801,9 @@ def mentions(state, since, limit):
             lines.append(f"## #{ch_name}\n")
             for p in posts:
                 author = authors.get(p.get("user_id", ""), "unknown")
+                rc = root_context.get(p.get("root_id", ""))
+                if rc:
+                    lines.append(f"*re: {rc['author']}: {rc['message'][:80]}*\n")
                 lines.append(format_post_md(p, author))
                 lines.append("")
         click.echo("\n".join(lines).rstrip() if lines else "No mentions found.")
