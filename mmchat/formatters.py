@@ -21,6 +21,97 @@ def _iso_ts(epoch_ms: int) -> str:
     return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def channel_ref(ch: dict) -> str:
+    """Compute the ref field for a channel - the argument to pass to `mm messages <ref>`.
+
+    For DMs/group DMs, returns channel_id since display names aren't addressable.
+    For named channels, returns the channel name.
+    """
+    ch_type = ch.get("type", "")
+    if ch_type in ("D", "G"):
+        return ch.get("id", ch.get("channel_id", ""))
+    return ch.get("name", "") or ch.get("channel", "") or ch.get("id", ch.get("channel_id", ""))
+
+
+def enrich_post(post: dict, author: str, channel_name: str = "",
+                team_name: str = "") -> dict:
+    """Build an enriched post dict for JSON output.
+
+    Single source of truth for post enrichment - used by all commands.
+    """
+    root_id = post.get("root_id", "")
+    file_ids = post.get("file_ids") or []
+    entry = {
+        "id": post["id"],
+        "thread_id": root_id if root_id else post["id"],
+        "is_reply": bool(root_id),
+        "author": author,
+        "message": post.get("message", ""),
+        "created_at": _iso_ts(post.get("create_at", 0)),
+        "channel_id": post.get("channel_id", ""),
+        "file_count": len(file_ids),
+    }
+    # reply_count only meaningful on root posts
+    if not root_id and post.get("reply_count"):
+        entry["reply_count"] = post["reply_count"]
+    # File metadata if available
+    if file_ids and post.get("metadata", {}).get("files"):
+        entry["files"] = [
+            {"name": f.get("name", ""), "size": f.get("size", 0)}
+            for f in post["metadata"]["files"]
+        ]
+    # Bot/webhook detection + attachment text extraction
+    props = post.get("props", {})
+    if props.get("from_webhook") == "true":
+        entry["is_bot"] = True
+        webhook_name = props.get("override_username", "")
+        if webhook_name:
+            entry["bot_name"] = webhook_name
+        # Extract text from slack attachments when message is empty
+        if not entry["message"] and props.get("attachments"):
+            parts = []
+            for att in props["attachments"]:
+                if att.get("pretext"):
+                    parts.append(att["pretext"])
+                if att.get("text"):
+                    parts.append(att["text"])
+                for field in att.get("fields", []):
+                    if field.get("title"):
+                        parts.append(field["title"])
+                    if field.get("value"):
+                        parts.append(field["value"][:200])
+            if parts:
+                entry["message"] = "\n".join(parts)[:500]
+    # Reactions summary
+    reactions = post.get("metadata", {}).get("reactions")
+    if reactions:
+        counts: dict[str, int] = {}
+        for r in reactions:
+            name = r.get("emoji_name", "")
+            counts[name] = counts.get(name, 0) + 1
+        entry["reactions"] = counts
+    # Optional context fields
+    if channel_name:
+        entry["channel"] = channel_name
+    if team_name:
+        entry["team"] = team_name
+    return entry
+
+
+def enrich_posts(posts: list[dict], authors: dict[str, str],
+                 channel_name: str = "", team_by_post: Optional[dict[str, str]] = None,
+                 channel_by_post: Optional[dict[str, str]] = None) -> list[dict]:
+    """Enrich a list of posts for JSON output."""
+    enriched = []
+    for p in posts:
+        uid = p.get("user_id", "")
+        author = authors.get(uid, "unknown")
+        ch = channel_name or (channel_by_post or {}).get(p["id"], "")
+        team = (team_by_post or {}).get(p["id"], "")
+        enriched.append(enrich_post(p, author, ch, team))
+    return enriched
+
+
 def format_channels_md(channels: list[dict]) -> str:
     """Format channel list as markdown table."""
     if not channels:
@@ -44,11 +135,7 @@ def format_channels_json(channels: list[dict]) -> str:
     out = []
     for ch in channels:
         ch_type = ch.get("type", "")
-        # For DMs/group DMs, ref is channel_id since names aren't addressable
-        if ch_type in ("D", "G"):
-            ref = ch["id"]
-        else:
-            ref = ch.get("name", "") or ch["id"]
+        ref = channel_ref(ch)
         entry = {
             "id": ch["id"],
             "name": ch.get("display_name", ch.get("name", "")),
@@ -88,16 +175,11 @@ def format_unread_json(unreads: list[dict]) -> str:
     """Format unread list as JSON with ISO timestamps.
 
     Includes 'ref' field - the argument to pass to `mm messages <ref>`.
-    For named channels this is the channel name, for DMs/group DMs it's the channel_id.
     """
     out = []
     for u in unreads:
         ch_type = u.get("type", "")
-        # For DMs and group DMs, use channel_id as the ref since display names aren't addressable
-        if ch_type in ("D", "G"):
-            ref = u["channel_id"]
-        else:
-            ref = u.get("channel", "") or u["channel_id"]
+        ref = channel_ref(u)
         out.append({
             "channel_id": u["channel_id"],
             "channel": u["display_name"],
@@ -184,61 +266,8 @@ def format_posts_json(
     authors: dict[str, str],
     channel_name: Optional[str] = None,
 ) -> str:
-    """Format posts as JSON with resolved names and ISO timestamps.
-
-    Includes thread_id (root_id if reply, own id if root) so agents
-    can always follow up with `mm thread <thread_id>`.
-    """
-    enriched = []
-    for post in posts:
-        uid = post.get("user_id", "")
-        root_id = post.get("root_id", "")
-        file_ids = post.get("file_ids") or []
-        entry = {
-            "id": post["id"],
-            "thread_id": root_id if root_id else post["id"],
-            "is_reply": bool(root_id),
-            "author": authors.get(uid, "unknown"),
-            "message": post.get("message", ""),
-            "created_at": _iso_ts(post.get("create_at", 0)),
-            "channel_id": post.get("channel_id", ""),
-            "file_count": len(file_ids),
-        }
-        # reply_count only meaningful on root posts
-        if not root_id and post.get("reply_count"):
-            entry["reply_count"] = post["reply_count"]
-        # File metadata if available
-        if file_ids and post.get("metadata", {}).get("files"):
-            entry["files"] = [
-                {"name": f.get("name", ""), "size": f.get("size", 0)}
-                for f in post["metadata"]["files"]
-            ]
-        # Bot/webhook detection
-        props = post.get("props", {})
-        if props.get("from_webhook") == "true":
-            entry["is_bot"] = True
-            webhook_name = props.get("override_username", "")
-            if webhook_name:
-                entry["bot_name"] = webhook_name
-            # Extract text from slack attachments when message is empty
-            if not entry["message"] and props.get("attachments"):
-                parts = []
-                for att in props["attachments"]:
-                    if att.get("pretext"):
-                        parts.append(att["pretext"])
-                    if att.get("text"):
-                        parts.append(att["text"])
-                    for field in att.get("fields", []):
-                        if field.get("title"):
-                            parts.append(field["title"])
-                        if field.get("value"):
-                            parts.append(field["value"][:200])
-                if parts:
-                    entry["message"] = "\n".join(parts)[:500]
-        if channel_name:
-            entry["channel"] = channel_name
-        enriched.append(entry)
-    return json.dumps(enriched, indent=2)
+    """Format posts as JSON - delegates to enrich_posts."""
+    return json.dumps(enrich_posts(posts, authors, channel_name or ""), indent=2)
 
 
 def _format_timestamp(create_at_ms: int) -> str:
