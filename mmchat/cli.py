@@ -54,7 +54,7 @@ pass_state = click.make_pass_decorator(State, ensure=True)
 @click.version_option(version=__version__, prog_name="mm")
 @click.pass_context
 def main(ctx, human, team, debug):
-    """mm - Read-only Mattermost CLI. Output is JSON by default."""
+    """mm - Mattermost CLI. Output is JSON by default."""
     ctx.ensure_object(State)
     ctx.obj.human = human
     ctx.obj.team = team

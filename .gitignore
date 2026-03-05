@@ -10,4 +10,3 @@ build/
 venv/
 .tox/
 .pytest_cache/
-_version.py
