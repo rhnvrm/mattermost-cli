@@ -254,28 +254,43 @@ def logout():
 
 @main.command()
 @click.option("--type", "ch_type", type=click.Choice(["public", "private", "dm", "group"]), help="Filter by channel type.")
+@click.option("--since", "since", default=None, help="Only channels with posts since (1h, 6h, 1d, today).")
 @pass_state
-def channels(state, ch_type):
+def channels(state, ch_type, since):
     """List channels you belong to."""
     ctx = get_context(state)
     resolver = Resolver(ctx.driver, ctx.user_id)
 
     type_filter = {"public": "O", "private": "P", "dm": "D", "group": "G"}.get(ch_type)
 
+    since_ms = None
+    if since:
+        try:
+            since_ms = parse_since(since)
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(EXIT_ERROR)
+
     all_channels = []
     for team in ctx.teams:
         raw = ctx.driver.channels.get_channels_for_user(ctx.user_id, team.id)
         for ch in raw:
+            if type_filter and ch["type"] != type_filter:
+                continue
+            if since_ms and (ch.get("last_post_at", 0) or 0) < since_ms:
+                continue
             info = resolver.format_channel(ch)
             info["team_name"] = team.display_name
             info["team_id"] = team.id
-            if type_filter and ch["type"] != type_filter:
-                continue
+            info["last_post_at"] = ch.get("last_post_at", 0)
             all_channels.append(info)
 
-    # Sort: type order (O, P, G, D) then name
-    type_order = {"O": 0, "P": 1, "G": 2, "D": 3}
-    all_channels.sort(key=lambda c: (type_order.get(c["type"], 9), c["display_name"].lower()))
+    # Sort: by last_post_at desc when --since is used, otherwise type then name
+    if since:
+        all_channels.sort(key=lambda c: -(c.get("last_post_at", 0) or 0))
+    else:
+        type_order = {"O": 0, "P": 1, "G": 2, "D": 3}
+        all_channels.sort(key=lambda c: (type_order.get(c["type"], 9), c["display_name"].lower()))
 
     # Deduplicate (channels can appear in multiple teams for cross-team channels)
     seen = set()

@@ -56,6 +56,8 @@ def format_channels_json(channels: list[dict]) -> str:
             "type": TYPE_LABELS.get(ch_type, ch_type),
             "team": ch.get("team_name", ""),
         }
+        if ch.get("last_post_at"):
+            entry["last_post_at"] = _iso_ts(ch["last_post_at"])
         # Include purpose/header if present and non-empty
         purpose = ch.get("purpose", "")
         header = ch.get("header", "")
