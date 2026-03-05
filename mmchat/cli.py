@@ -292,9 +292,10 @@ def channels(state, ch_type):
 
 
 @main.command()
+@click.option("--include-muted", is_flag=True, default=False, help="Include muted channels (hidden by default).")
 @pass_state
-def unread(state):
-    """Show channels with unread messages."""
+def unread(state, include_muted):
+    """Show channels with unread messages. Muted channels are hidden by default."""
     ctx = get_context(state)
     resolver = Resolver(ctx.driver, ctx.user_id)
 
@@ -311,6 +312,12 @@ def unread(state):
             member = member_map.get(ch["id"])
             if not member:
                 continue
+
+            # Skip muted channels unless --include-muted
+            if not include_muted:
+                notify = member.get("notify_props", {})
+                if notify.get("mark_unread") == "mention":
+                    continue
 
             # Use root counts (matches CRT-enabled UI) with fallback to total
             total_root = ch.get("total_msg_count_root")
