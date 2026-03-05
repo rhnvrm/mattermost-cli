@@ -5,11 +5,12 @@ Mattermost CLI for humans and agents.
 ## Install
 
 ```bash
-# via uvx (recommended)
-uvx mattermost-cli --help
+# Run directly (no install)
+uvx --from mattermost-cli mm --help
 
-# or pip
+# Or install globally
 pip install mattermost-cli
+mm --help
 ```
 
 ## Setup

@@ -8,14 +8,14 @@ description: Get running in 2 minutes
 ## Install
 
 ```bash
-# With uvx (no install needed)
-uvx mattermost-cli --help
+# Run directly (no install needed)
+uvx --from mattermost-cli mm --help
 
-# Or install with pip
+# Or install globally
 pip install mattermost-cli
 ```
 
-This gives you the `mm` command.
+The package name is `mattermost-cli`, the CLI command is `mm`. With `uvx`, use `--from` since the names differ.
 
 ## Authenticate
 

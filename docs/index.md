@@ -10,14 +10,13 @@ A CLI for Mattermost that outputs JSON by default, designed for both human use a
 ## Install
 
 ```bash
-# Recommended
-uvx mattermost-cli --help
+# Run directly (no install)
+uvx --from mattermost-cli mm --help
 
 # Or install globally
 pip install mattermost-cli
+mm --help
 ```
-
-The CLI command is `mm`.
 
 ## What it does
 
