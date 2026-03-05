@@ -43,6 +43,9 @@ Homepage = "https://github.com/rhnvrm/mattermost-cli"
 Repository = "https://github.com/rhnvrm/mattermost-cli"
 Issues = "https://github.com/rhnvrm/mattermost-cli/issues"
 
+[tool.hatch.build.targets.wheel]
+packages = ["mmchat"]
+
 [tool.hatch.version]
 source = "vcs"
 
