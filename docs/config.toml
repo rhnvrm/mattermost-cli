@@ -1,0 +1,14 @@
+site_name = "mattermost-cli"
+base_path = "/mattermost-cli"
+
+[highlight]
+light = "github"
+dark  = "github-dark"
+
+[[links]]
+title = "GitHub"
+url = "https://github.com/rhnvrm/mattermost-cli"
+
+[[links]]
+title = "PyPI"
+url = "https://pypi.org/project/mattermost-cli/"
