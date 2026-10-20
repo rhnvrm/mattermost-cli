@@ -5,6 +5,7 @@ import sys
 
 import click
 
+from ..coverage import current_coverage, retrieval_command
 from ..cli import get_context, main, pass_state
 from ..client import EXIT_ERROR
 from ..formatters import TYPE_LABELS, _iso_ts, channel_ref
@@ -22,6 +23,7 @@ from ..time_utils import parse_since
 @main.command()
 @click.option("--since", "since", default="6h", show_default=True, help="Look back period (1h, 6h, 1d, 0 for all).")
 @pass_state
+@retrieval_command
 def overview(state, since):
     """Get oriented: mentions, unread, and active channels in one call.
 
@@ -40,6 +42,7 @@ def overview(state, since):
             sys.exit(EXIT_ERROR)
 
     # 1. Mentions
+    current_coverage.get().scope.update(since_ms=since_ms, mentions_limit=30)
     mentions_raw = search_mentions(ctx, since_ms)
     mention_posts = [p for p, _ in mentions_raw]
     user_map, authors = resolve_authors(resolver, mention_posts)

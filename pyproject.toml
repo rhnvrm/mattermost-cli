@@ -27,6 +27,7 @@ dependencies = [
     "mattermostdriver>=7.3",
     "click>=8.0",
     "httpx>=0.20.0,<1.0.0",
+    "requests>=2.25,<3",
 ]
 
 [project.optional-dependencies]

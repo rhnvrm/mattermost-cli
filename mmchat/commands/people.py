@@ -5,16 +5,19 @@ import sys
 
 import click
 
+from ..coverage import current_coverage, retrieval_command
 from ..cli import get_context, main, pass_state
 from ..client import EXIT_ERROR
 from ..formatters import enrich_posts, format_post_md
 from ..helpers import resolve_authors, resolve_channel
 from ..resolve import Resolver
+from ..retrieval import MAX_PAGES, PAGE_SIZE, PageLimitReached, PaginationStalled, ordered_posts
 
 
 @main.command()
 @click.argument("username")
 @pass_state
+@retrieval_command
 def user(state, username):
     """Show user profile and status.
 
@@ -68,8 +71,9 @@ def user(state, username):
 
 @main.command()
 @click.argument("channel")
-@click.option("--limit", "limit", default=10, type=int, show_default=True, help="Max pinned posts to show.")
+@click.option("--limit", "limit", default=10, type=click.IntRange(min=0), show_default=True, help="Max pinned posts to show. 0 for all.")
 @pass_state
+@retrieval_command
 def pinned(state, channel, limit):
     """Show pinned posts in a channel."""
     ctx = get_context(state)
@@ -79,16 +83,14 @@ def pinned(state, channel, limit):
     ch_id = ch["id"]
     ch_info = resolver.format_channel(ch)
 
+    source = current_coverage.get().source("pinned", ch_id, limit)
     result = ctx.driver.client.get(f"/channels/{ch_id}/pinned")
-    order = result.get("order", [])
-    posts_map = result.get("posts", {})
-
-    posts = []
-    for pid in order:
-        if pid in posts_map:
-            posts.append(posts_map[pid])
+    posts = ordered_posts(result)
+    source["pages_fetched"] = 1
+    source["stop_reason"] = "limit" if limit and len(posts) > limit else "exhausted"
     posts.sort(key=lambda p: p.get("create_at", 0), reverse=True)
-    posts = posts[:limit]
+    posts = posts[:limit] if limit else posts
+    source["returned"] = len(posts)
 
     if not posts:
         click.echo("[]" if not state.human else "No pinned posts.")
@@ -111,6 +113,7 @@ def pinned(state, channel, limit):
 @main.command()
 @click.argument("channel")
 @pass_state
+@retrieval_command
 def members(state, channel):
     """List members of a channel."""
     ctx = get_context(state)
@@ -121,16 +124,31 @@ def members(state, channel):
 
     # Paginate through all members
     all_members = []
-    page = 0
-    per_page = 200
-    while True:
-        batch = ctx.driver.client.get(f"/channels/{ch_id}/members?page={page}&per_page={per_page}")
-        if not batch:
+    report = current_coverage.get()
+    source = report.source("members", ch_id)
+    seen = set()
+    for page in range(MAX_PAGES):
+        try:
+            batch = ctx.driver.client.get(f"/channels/{ch_id}/members", params={"page": page, "per_page": PAGE_SIZE})
+            source["pages_fetched"] += 1
+            if not batch:
+                source["stop_reason"] = "exhausted"
+                break
+            fresh = [m for m in batch if m["user_id"] not in seen]
+            if not fresh:
+                raise PaginationStalled("Membership pagination made no progress")
+            for member in fresh:
+                if member["user_id"] not in seen:
+                    all_members.append(member)
+                    seen.add(member["user_id"])
+        except Exception as error:
+            report.fail("members", error)
+            source["stop_reason"] = "failure"
             break
-        all_members.extend(batch)
-        if len(batch) < per_page:
-            break
-        page += 1
+    else:
+        report.fail("members", PageLimitReached("Page safety limit reached"))
+        source["stop_reason"] = "page_limit"
+    source["returned"] = len(all_members)
 
     # Resolve usernames
     user_ids = [m["user_id"] for m in all_members]

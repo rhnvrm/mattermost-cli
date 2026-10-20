@@ -28,6 +28,8 @@ mm messages general                   # By channel name
 mm messages @alice                    # DM with a user
 mm messages abc123def456...           # By channel ID (for group DMs)
 mm messages general --limit 10        # Last 10 messages
+mm messages general --limit 1250      # Fetch across multiple pages
+mm messages general --limit 0         # All accessible history (bounded by a page safety limit)
 mm messages general --since 2h        # Messages from last 2 hours
 mm messages general --since today     # Messages from today
 mm messages general --threads         # Thread index view
@@ -72,6 +74,7 @@ mm mentions                   # Last 24 hours (default)
 mm mentions --since 2h        # Last 2 hours
 mm mentions --since 0         # All time
 mm mentions --limit 10        # Max 10 results
+mm mentions --since 0 --limit 0  # All accessible mentions
 ```
 
 ## mm search
@@ -81,12 +84,29 @@ Search messages across all teams.
 ```bash
 mm search "deployment issue"
 mm search "deployment issue" --limit 10
+mm search "deployment issue" --limit 200      # Fetch across server pages
+mm search "deployment issue" --limit 0        # All accessible matches
 mm search "from:alice"                        # Mattermost search modifiers
 mm search "in:engineering deployment"         # Search in a specific channel
 mm search "before:2026-03-01 incident"        # Date filters
 ```
 
 Supports all [Mattermost search modifiers](https://docs.mattermost.com/collaborate/search-for-messages.html): `from:`, `in:`, `before:`, `after:`, `on:`, etc.
+
+Messages keep the default limit of 30 and are displayed chronologically. Search and
+mentions return the newest matches first, merged and deduplicated across selected
+teams. `--since` on messages and mentions filters by creation time, including posts
+exactly at the cutoff. Message retrieval walks older posts instead of using the
+server's capped, modified-since endpoint.
+Mentions widens the server's `after:DATE` filter to the previous UTC date because
+Mattermost starts that filter on the following day, then applies the exact
+creation-time cutoff locally. This includes today's mentions and posts exactly
+at midnight for `--since today`.
+
+Retrieval commands write coverage to stderr and keep their existing stdout JSON
+shapes. Check the exit status as well as the data: partial results remain useful
+when a page, team, or context lookup fails. See [coverage reporting](02-json-output.md#coverage-on-stderr)
+for the report fields and exit codes.
 
 ## mm channel
 

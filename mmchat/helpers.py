@@ -4,14 +4,17 @@ import contextlib
 import io
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import click
+from mattermostdriver.exceptions import ResourceNotFound
 
 from .client import EXIT_ERROR, MMContext
+from .coverage import Coverage, current_coverage
 from .formatters import TYPE_LABELS, _iso_ts, channel_ref
 from .resolve import Resolver
+from .retrieval import PAGE_SIZE, UnsupportedSearchPagination, collect_posts, ordered_posts
 from .time_utils import parse_since
 
 
@@ -33,9 +36,12 @@ def resolve_channel(ctx: MMContext, resolver: Resolver, channel_arg: str) -> dic
                 sys.exit(EXIT_ERROR)
             other_id = users[0]["id"]
             for team in ctx.teams:
-                channels = ctx.driver.channels.get_channels_for_user(ctx.user_id, team.id)
+                try:
+                    channels = get_user_channels(ctx, team.id)
+                except Exception:
+                    continue
                 for ch in channels:
-                    if ch["type"] == "D" and other_id in ch["name"]:
+                    if ch["type"] == "D" and other_id in ch["name"].split("__"):
                         return ch
             click.echo(f"Error: No DM channel found with @{username}.", err=True)
             sys.exit(EXIT_ERROR)
@@ -58,7 +64,15 @@ def resolve_channel(ctx: MMContext, resolver: Resolver, channel_arg: str) -> dic
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 return ctx.driver.channels.get_channel_by_name(team.id, channel_arg)
-        except Exception:
+        except ResourceNotFound as error:
+            report = current_coverage.get()
+            if report:
+                report.recovered(error)
+            continue
+        except Exception as error:
+            report = current_coverage.get()
+            if report:
+                report.fail("resolve_channel", error)
             continue
 
     click.echo(f"Error: Channel '{channel_arg}' not found in any team.", err=True)
@@ -66,7 +80,7 @@ def resolve_channel(ctx: MMContext, resolver: Resolver, channel_arg: str) -> dic
 
 
 def fetch_post_silent(driver, post_id: str) -> Optional[dict]:
-    """Fetch a post by ID, suppressing driver stderr on errors."""
+    """Fetch optional context; the client records failures in coverage."""
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             return driver.posts.get_post(post_id)
@@ -77,28 +91,75 @@ def fetch_post_silent(driver, post_id: str) -> Optional[dict]:
 def search_mentions(ctx: MMContext, since_ms: Optional[int] = None,
                     limit: int = 30) -> list[tuple[dict, str]]:
     """Search for @-mentions across all teams. Returns [(post, team_name)] deduped."""
+    terms = f"@{ctx.username}"
+    if since_ms:
+        # Mattermost interprets after:DATE as midnight on the following day.
+        since_date = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc) - timedelta(days=1)
+        terms += f" after:{since_date.strftime('%Y-%m-%d')}"
+    return search_posts(ctx, terms, limit, since_ms)
+
+
+def search_posts(ctx: MMContext, terms: str, limit: int = 30,
+                 since_ms: Optional[int] = None) -> list[tuple[dict, str]]:
+    report = current_coverage.get()
+    if report is None:
+        report = Coverage("search")
     all_posts = []
     for team in ctx.teams:
-        terms = f"@{ctx.username}"
-        if since_ms:
-            since_date = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
-            terms += f" after:{since_date.strftime('%Y-%m-%d')}"
-        result = ctx.driver.posts.search_for_team_posts(
-            team.id, {"terms": terms, "is_or_search": False}
-        )
-        for pid in result.get("order", []):
-            post = result.get("posts", {}).get(pid)
-            if post:
-                all_posts.append((post, team.display_name))
+        report.teams.add(team.id)
+        source = report.source("search", team.id, limit)
+        first_page_size = 0
 
-    all_posts.sort(key=lambda pt: pt[0].get("create_at", 0), reverse=True)
+        def fetch(page):
+            nonlocal first_page_size
+            result = ctx.driver.posts.search_for_team_posts(team.id, {
+                "terms": terms, "is_or_search": False, "page": page, "per_page": PAGE_SIZE,
+                "time_zone_offset": 0})
+            if page == 0:
+                order = result.get("order") if isinstance(result, dict) else None
+                first_page_size = len(order) if isinstance(order, list) else 0
+            return result
+
+        def confirm_exhaustion():
+            # DB search caps page zero at 100 and returns empty later pages.
+            # A one-result probe distinguishes it from a paged backend with
+            # exactly 100 matches. Below the cap, no such ambiguity exists.
+            if first_page_size < 100 or source["pages_fetched"] != 2:
+                return
+            probe = ctx.driver.posts.search_for_team_posts(team.id, {
+                "terms": terms, "is_or_search": False, "page": 0, "per_page": 1,
+                "time_zone_offset": 0})
+            source["pages_fetched"] += 1
+            if len(ordered_posts(probe)) > 1:
+                raise UnsupportedSearchPagination("Search backend ignores pagination; exhaustion is unverified")
+
+        posts = collect_posts(fetch, report, source, limit=limit, since_ms=since_ms,
+                              confirm_exhaustion=confirm_exhaustion)
+        all_posts.extend((p, team.display_name) for p in posts)
+
+    all_posts.sort(key=lambda pt: (pt[0]["create_at"], pt[0]["id"]), reverse=True)
     seen = set()
     deduped = []
     for p, t in all_posts:
         if p["id"] not in seen:
             seen.add(p["id"])
             deduped.append((p, t))
-    return deduped[:limit]
+    return deduped[:limit] if limit else deduped
+
+
+def get_user_channels(ctx: MMContext, team_id: str) -> list[dict]:
+    report = current_coverage.get()
+    source = report.source("channels", team_id) if report else None
+    try:
+        channels = ctx.driver.channels.get_channels_for_user(ctx.user_id, team_id)
+    except Exception as error:
+        if source is not None:
+            source["stop_reason"] = "failure"
+            report.fail("channels", error)
+        raise
+    if source is not None:
+        source.update(pages_fetched=1, returned=len(channels), stop_reason="exhausted")
+    return channels
 
 
 def get_channels_and_members(ctx: MMContext) -> list[tuple[dict, dict, str]]:
@@ -109,8 +170,14 @@ def get_channels_and_members(ctx: MMContext) -> list[tuple[dict, dict, str]]:
     results = []
     seen = set()
     for team in ctx.teams:
-        channels_raw = ctx.driver.channels.get_channels_for_user(ctx.user_id, team.id)
-        members_raw = ctx.driver.channels.get_channel_members_for_user(ctx.user_id, team.id)
+        try:
+            channels_raw = get_user_channels(ctx, team.id)
+            members_raw = ctx.driver.channels.get_channel_members_for_user(ctx.user_id, team.id)
+        except Exception as error:
+            if current_coverage.get() is None:
+                raise
+            current_coverage.get().fail("channels_and_members", error)
+            continue
         member_map = {m["channel_id"]: m for m in members_raw}
         for ch in channels_raw:
             if ch["id"] in seen:
@@ -119,6 +186,8 @@ def get_channels_and_members(ctx: MMContext) -> list[tuple[dict, dict, str]]:
             member = member_map.get(ch["id"])
             if member:
                 results.append((ch, member, team.display_name))
+            elif current_coverage.get() is not None:
+                current_coverage.get().fail("channel_membership", ValueError("Missing channel membership"))
     return results
 
 

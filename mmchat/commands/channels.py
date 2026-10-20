@@ -5,6 +5,7 @@ import sys
 
 import click
 
+from ..coverage import retrieval_command
 from ..cli import get_context, main, pass_state
 from ..client import EXIT_ERROR
 from ..formatters import (
@@ -15,7 +16,7 @@ from ..formatters import (
     format_unread_json,
     format_unread_md,
 )
-from ..helpers import compute_unreads, get_channels_and_members, resolve_channel
+from ..helpers import compute_unreads, get_channels_and_members, get_user_channels, resolve_channel
 from ..resolve import Resolver
 from ..time_utils import parse_since
 
@@ -23,6 +24,7 @@ from ..time_utils import parse_since
 @main.command()
 @click.argument("channel")
 @pass_state
+@retrieval_command
 def channel(state, channel):
     """Show info about a single channel.
 
@@ -84,6 +86,7 @@ def channel(state, channel):
 @click.option("--type", "ch_type", type=click.Choice(["public", "private", "dm", "group"]), help="Filter by channel type.")
 @click.option("--since", "since", default=None, help="Only channels with posts since (1h, 6h, 1d, today).")
 @pass_state
+@retrieval_command
 def channels(state, ch_type, since):
     """List channels you belong to."""
     ctx = get_context(state)
@@ -101,7 +104,10 @@ def channels(state, ch_type, since):
 
     all_channels = []
     for team in ctx.teams:
-        raw = ctx.driver.channels.get_channels_for_user(ctx.user_id, team.id)
+        try:
+            raw = get_user_channels(ctx, team.id)
+        except Exception:
+            continue
         for ch in raw:
             if type_filter and ch["type"] != type_filter:
                 continue
@@ -135,6 +141,7 @@ def channels(state, ch_type, since):
 @main.command()
 @click.option("--include-muted", is_flag=True, default=False, help="Include muted channels (hidden by default).")
 @pass_state
+@retrieval_command
 def unread(state, include_muted):
     """Show channels with unread messages. Muted channels are hidden by default."""
     ctx = get_context(state)

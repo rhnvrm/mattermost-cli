@@ -2,6 +2,8 @@
 
 from typing import Optional
 
+from .coverage import current_coverage
+
 
 class Resolver:
     """Resolves Mattermost IDs to display names. Caches results per session."""
@@ -11,6 +13,7 @@ class Resolver:
         self.my_user_id = my_user_id
         self._users: dict[str, dict] = {}
         self._channels: dict[str, dict] = {}
+        self._failed_users: set[str] = set()
 
     def resolve_user(self, user_id: str) -> dict:
         """Resolve a user ID to {id, username, display_name}."""
@@ -20,6 +23,7 @@ class Resolver:
         try:
             u = self.driver.users.get_user(user_id)
         except Exception:
+            self._failed_users.add(user_id)
             result = {"id": user_id, "username": user_id, "display_name": user_id}
             self._users[user_id] = result
             return result
@@ -37,6 +41,7 @@ class Resolver:
         uncached = [uid for uid in set(user_ids) if uid not in self._users]
 
         if uncached:
+            batch_error = None
             try:
                 users = self.driver.users.get_users_by_ids(uncached)
                 for u in users:
@@ -45,10 +50,15 @@ class Resolver:
                         "username": u["username"],
                         "display_name": _user_display_name(u),
                     }
-            except Exception:
-                # Fall back to individual lookups
-                for uid in uncached:
+            except Exception as error:
+                batch_error = error
+            # Servers can also omit inaccessible IDs from a successful batch.
+            for uid in uncached:
+                if uid not in self._users:
                     self.resolve_user(uid)
+            report = current_coverage.get()
+            if batch_error and report and not self._failed_users.intersection(uncached):
+                report.recovered(batch_error)
 
         return {uid: self._users.get(uid, {"id": uid, "username": uid, "display_name": uid}) for uid in user_ids}
 

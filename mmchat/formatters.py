@@ -299,3 +299,18 @@ def _format_timestamp(create_at_ms: int) -> str:
     if dt.date() == now.date():
         return dt.strftime("%H:%M")
     return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def format_coverage_json(report: dict) -> str:
+    """A single JSON line for stderr; stdout keeps its existing shape."""
+    return json.dumps({"coverage": report}, separators=(",", ":"))
+
+
+def format_coverage_md(report: dict) -> str:
+    status = "complete" if report["complete"] else "INCOMPLETE"
+    stops = ", ".join(f"{s['kind']}: {s['stop_reason']} (limit {s['limit']})" for s in report["sources"])
+    summary = (f"Coverage: {status}; {report['teams_checked']} teams, "
+            f"{report['conversations_checked']} conversations checked, {report['pages_fetched']} pages; "
+            f"{len(report['failures'])} failures. {stops}").rstrip()
+    failures = [f"  {f['operation']}: {f['error']}" for f in report["failures"]]
+    return "\n".join([summary] + failures)

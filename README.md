@@ -34,6 +34,8 @@ mm overview
 # Read messages
 mm messages general
 mm messages general --since 1h
+mm messages general --limit 1250    # Fetch across multiple pages
+mm messages general --since 1d --limit 0  # All accessible posts in the time window
 mm messages general --threads       # thread index view
 mm messages @alice                  # DM with a user
 
@@ -43,6 +45,7 @@ mm thread <post-id> --limit 0      # full thread
 
 # Search and mentions
 mm search "deployment issue"
+mm search "deployment issue" --limit 200  # Fetch across server pages
 mm mentions                         # @-mentions in last 24h
 
 # Download files by file ID
@@ -74,6 +77,13 @@ All commands output JSON by default. Key fields:
 Webhook posts automatically extract alert content from Slack-format attachments.
 
 Add `--human` for readable markdown output instead.
+
+Retrieval commands keep stdout JSON compatible and write coverage to stderr:
+teams and conversations checked, pages fetched, limits, stop reasons and failures.
+Exit code `4` means retrieval is incomplete; any partial stdout data is still
+usable. Reaching the requested limit is successful and reported explicitly.
+Use `--limit 0` on messages, search or mentions to request all accessible results,
+subject to the page safety limit. See the [coverage reference](docs/01-guide/02-json-output.md#coverage-on-stderr).
 
 ## Agent Skill
 

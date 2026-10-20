@@ -7,6 +7,74 @@ description: Output format reference for programmatic use
 
 All commands output JSON by default. This page documents the shape of each output.
 
+## Coverage on stderr
+
+`messages`, `thread`, `search`, `mentions`, `overview`, `channels`, `unread`,
+`channel`, `pinned`, `members`, and `user` keep their existing stdout data shapes
+and write one JSON coverage report as the final line of stderr. `--human` uses a
+readable coverage summary instead. Authentication and usage errors may also write
+diagnostics to stderr; help and argument-validation errors do not start retrieval.
+
+```bash
+mm messages general --limit 1250 >posts.json 2>coverage.jsonl
+status=$?
+```
+
+The report has a top-level `coverage` object with these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `command` | Retrieval command |
+| `scope` | Requested limit, time filter, selected team IDs and relevant command filters |
+| `complete` | The requested bounded retrieval finished without detected failures |
+| `teams_checked` | Distinct teams consulted, including failed attempts |
+| `conversations_checked` | Distinct channels inspected or exposed by successful API responses |
+| `pages_fetched` | Successful collection/thread responses, including empty terminal pages; excludes retry attempts and individual context lookups |
+| `requests_attempted` | All HTTP attempts, including authentication and enrichment |
+| `retries` | Extra HTTP attempts after transient failures |
+| `sources` | Per-source kind, ID, limit, pages fetched, returned count and stop reason |
+| `failures` | Unrecovered operations with error types and HTTP status when available; excludes raw server text and credentials |
+
+Source stop reasons are `limit`, `since`, `exhausted`, `stalled`, `page_limit`,
+`unsupported_pagination`, or `failure`. A source's `returned` count is before
+cross-team merging or thread-index grouping. The overview's mentions section retains its existing limit of 30 and
+reports that limit explicitly.
+
+`complete: true` means the requested bounds were satisfied. A source stopped at
+`limit` does **not** claim history was exhausted. Team search only reveals channels
+in returned matches; `conversations_checked` is not a count of every channel the
+search backend examined. Channel listings inspect channel metadata, not message
+history. Server permissions, retention and search indexing still determine what
+is accessible, and paging does not provide a snapshot against concurrent edits.
+Search paging support depends on the server's search backend; a server that
+ignores page parameters and repeats results is reported as stalled and incomplete.
+The database search backend instead caps the first page at 100 matches and returns
+empty later pages. When that could hide additional matches, a smaller-page probe
+checks whether pagination is supported. An unsupported or unverified backend
+returns partial data with `unsupported_pagination` and exit code 4, even when
+exactly 100 matches might exist. Requests satisfied within the cap still succeed;
+fewer than 100 matches can establish exhaustion. Probe responses count toward
+pages fetched. Message retrieval uses page offsets to avoid losing posts that
+share a millisecond with a `before` cursor boundary.
+
+Exit code **4** indicates incomplete retrieval: useful partial data is retained,
+but retries were exhausted, a source or enrichment failed, pagination stalled,
+the server explicitly withheld posts, or the 1,000-page safety limit per paginated
+source was reached. Reaching the requested result limit is successful. Existing
+setup/argument errors remain nonzero, and expired credentials during initial
+authentication retain exit code **2**.
+Unrecovered channel/user lookup failures after authentication use exit code **4**;
+initial authentication/setup failures retain exit code **1** (or **2** for an
+expired token). Failed teams are retained in coverage while lookup continues in
+other selected teams. Inaccessible history is detected from the JSON
+`first_inaccessible_post_time` field as well as the compatibility header.
+
+Requests use a 15-second timeout. Read operations allow at most three attempts for
+transient connection/timeouts and HTTP 429, 500, 502, 503 or 504. Backoff starts at
+0.5 seconds, then 1 second; `Retry-After` can increase each wait up to 5 seconds.
+Read-only search and user/status lookup POSTs are included. Login, logout and
+other write operations are never retried.
+
 ## Posts (messages, mentions, thread, search, pinned)
 
 Every post has these fields:

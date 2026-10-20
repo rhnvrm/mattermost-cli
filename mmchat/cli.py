@@ -11,6 +11,7 @@ import click
 from . import __version__
 from .client import EXIT_ERROR, ensure_auth
 from .config import ConfigError, get_credentials
+from .coverage import current_coverage
 
 
 class State:
@@ -48,7 +49,12 @@ def get_context(state: State):
         sys.exit(EXIT_ERROR)
 
     team = state.team or creds.get("team")
-    return ensure_auth(creds["url"], creds["token"], team)
+    context = ensure_auth(creds["url"], creds["token"], team)
+    report = current_coverage.get()
+    if report:
+        report.retrieval_started = True
+        report.scope.update(team=team, team_ids=context.team_ids)
+    return context
 
 
 # Import command modules to register them on the main group.

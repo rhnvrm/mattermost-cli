@@ -1,13 +1,22 @@
 """Driver wrapper - auth, URL parsing, team detection."""
 
+import logging
 import sys
+import re
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
+import requests
 from mattermostdriver import Driver
+from mattermostdriver.client import Client
 from mattermostdriver.exceptions import NoAccessTokenProvided
+
+from .coverage import current_coverage
 
 
 # Exit codes for daemon integration
@@ -15,6 +24,93 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_AUTH_EXPIRED = 2
 EXIT_RATE_LIMITED = 3
+
+REQUEST_TIMEOUT = 15
+MAX_ATTEMPTS = 3
+MAX_RETRY_DELAY = 5
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:
+    """Respect Retry-After within a bounded wait budget."""
+    delay = 0.5 * 2 ** attempt
+    if retry_after:
+        try:
+            delay = max(delay, float(retry_after))
+        except ValueError:
+            try:
+                date = parsedate_to_datetime(retry_after)
+                delay = max(delay, (date - datetime.now(timezone.utc)).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                pass
+    return min(MAX_RETRY_DELAY, max(0, delay))
+
+
+def is_read_request(method: str, endpoint: str) -> bool:
+    return method.lower() == "get" or (method.lower() == "post" and (
+        re.fullmatch(r"/teams/[^/]+/posts/search", endpoint) is not None
+        or endpoint in ("/users/ids", "/users/usernames", "/users/status/ids")))
+
+
+class _CoverageLogFilter(logging.Filter):
+    def filter(self, record):
+        # Driver error logs contain raw server text; coverage reports safe error types.
+        return current_coverage.get() is None
+
+
+logging.getLogger("mattermostdriver.websocket").addFilter(_CoverageLogFilter())
+
+
+class ReliableClient(Client):
+    def make_request(self, method, endpoint, *args, **kwargs):
+        report = current_coverage.get()
+        path = endpoint.split("?")[0]
+        team = re.search(r"/teams/([^/]+)/", path)
+        if report and team:
+            report.teams.add(team[1])
+        attempts = MAX_ATTEMPTS if is_read_request(method, endpoint) else 1
+        for attempt in range(attempts):
+            if report:
+                report.requests_attempted += 1
+            try:
+                response = super().make_request(method, endpoint, *args, **kwargs)
+            except Exception as error:
+                response = getattr(error, "response", None)
+                status = getattr(response, "status_code", None)
+                transient = isinstance(error, (requests.ConnectionError, requests.Timeout,
+                                               httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError))
+                if isinstance(error, requests.exceptions.SSLError):
+                    transient = False
+                if attempt + 1 < attempts and (transient or status in RETRY_STATUSES):
+                    if report:
+                        report.retries += 1
+                    retry_after = response.headers.get("Retry-After") if response is not None else None
+                    time.sleep(retry_delay(attempt, retry_after))
+                    continue
+                if report:
+                    report.fail(f"{method.upper()} {endpoint.split('?')[0]}", error)
+                raise
+            if report:
+                try:
+                    inaccessible = response.headers.get("Has-Inaccessible-Posts", "").lower() == "true"
+                    if path.endswith(("/posts", "/posts/search", "/thread", "/channels", "/members", "/pinned")):
+                        report.pages_fetched += 1
+                        data = response.json()
+                        if isinstance(data, list) and path.endswith("/channels"):
+                            report.conversations.update(ch["id"] for ch in data)
+                        elif isinstance(data, dict) and "posts" in data:
+                            report.conversations.update(p["channel_id"] for p in data["posts"].values() if p.get("channel_id"))
+                        if isinstance(data, dict) and data.get("first_inaccessible_post_time", 0):
+                            inaccessible = True
+                    if inaccessible:
+                        report.fail(f"{method.upper()} {path}", PermissionError("Server withheld inaccessible posts"))
+                    channel = re.match(r"/channels/([^/]+)(?:/|$)", path)
+                    if channel:
+                        report.conversations.add(channel[1])
+                except Exception as error:
+                    report.fail(f"{method.upper()} {path}", error)
+                    raise
+            return response
 
 
 @dataclass
@@ -69,6 +165,7 @@ def create_driver(
         "port": port,
         "token": token or "",
         "debug": False,
+        "request_timeout": REQUEST_TIMEOUT,
     }
     if login_id:
         options["login_id"] = login_id
@@ -77,7 +174,7 @@ def create_driver(
     if mfa_token:
         options["mfa_token"] = mfa_token
 
-    return Driver(options)
+    return Driver(options, client_cls=ReliableClient)
 
 
 def login(driver: Driver) -> dict:
@@ -92,7 +189,7 @@ def login(driver: Driver) -> dict:
         return result
     except NoAccessTokenProvided:
         raise
-    except httpx.ConnectError as e:
+    except (httpx.TransportError, requests.ConnectionError, requests.Timeout) as e:
         url = f"{driver.options['scheme']}://{driver.options['url']}:{driver.options['port']}"
         raise ConnectionError(f"Cannot connect to {url}: {e}") from e
 

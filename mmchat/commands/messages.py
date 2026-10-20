@@ -5,20 +5,23 @@ import sys
 
 import click
 
+from ..coverage import current_coverage, retrieval_command
 from ..cli import State, get_context, main, pass_state
 from ..client import EXIT_ERROR, MMContext
 from ..formatters import _iso_ts, format_posts_json, format_posts_md
 from ..helpers import fetch_post_silent, resolve_authors, resolve_channel
 from ..resolve import Resolver
+from ..retrieval import PAGE_SIZE, collect_posts, ordered_posts
 from ..time_utils import parse_since
 
 
 @main.command()
 @click.argument("channel")
 @click.option("--since", "since", default=None, help="Show messages since (1h, 2d, today, 2026-03-05).")
-@click.option("--limit", "limit", default=30, type=int, show_default=True, help="Max messages (max 200).")
+@click.option("--limit", "limit", default=30, type=click.IntRange(min=0), show_default=True, help="Max messages. 0 for all.")
 @click.option("--threads", is_flag=True, default=False, help="Group by thread: show root + last reply + reply count.")
 @pass_state
+@retrieval_command
 def messages(state, channel, since, limit, threads):
     """Read messages from a channel.
 
@@ -31,22 +34,26 @@ def messages(state, channel, since, limit, threads):
     ch = resolve_channel(ctx, resolver, channel)
     ch_info = resolver.format_channel(ch)
 
-    params = {"per_page": min(limit, 200)}
+    since_ms = None
     if since:
         try:
-            params["since"] = parse_since(since)
+            since_ms = parse_since(since) if since != "0" else None
         except ValueError as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(EXIT_ERROR)
 
-    result = ctx.driver.posts.get_posts_for_channel(ch["id"], params=params)
+    report = current_coverage.get()
+    report.scope["since_ms"] = since_ms
+    report.conversations.add(ch["id"])
+    source = report.source("messages", ch["id"], limit)
 
-    order = result.get("order", [])
-    posts_map = result.get("posts", {})
+    def fetch(page):
+        # Mattermost's before cursor excludes the whole boundary millisecond.
+        params = {"page": page, "per_page": min(limit or PAGE_SIZE, PAGE_SIZE)}
+        return ctx.driver.posts.get_posts_for_channel(ch["id"], params=params)
 
-    posts = [posts_map[pid] for pid in order if pid in posts_map]
-    posts.reverse()  # chronological order
-    posts = posts[:limit]
+    posts = collect_posts(fetch, report, source, limit=limit, since_ms=since_ms)
+    posts.reverse()
 
     user_map, authors = resolve_authors(resolver, posts)
 
@@ -119,9 +126,10 @@ def _render_thread_index(state: State, ctx: MMContext, ch_info: dict,
 
 @main.command()
 @click.argument("post_id")
-@click.option("--limit", "limit", default=10, type=int, show_default=True, help="Max messages (root + last N-1 replies). 0 for all.")
+@click.option("--limit", "limit", default=10, type=click.IntRange(min=0), show_default=True, help="Max messages (root + last N-1 replies). 0 for all.")
 @click.option("--since", "since", default=None, help="Show replies since (1h, 2d, today). Root always included.")
 @pass_state
+@retrieval_command
 def thread(state, post_id, limit, since):
     """Read a thread by post ID.
 
@@ -132,16 +140,17 @@ def thread(state, post_id, limit, since):
     ctx = get_context(state)
     resolver = Resolver(ctx.driver, ctx.user_id)
 
+    report = current_coverage.get()
+    source = report.source("thread", post_id, limit)
     try:
         result = ctx.driver.posts.get_thread(post_id)
+        posts = ordered_posts(result)
+        source["pages_fetched"] = 1
+        source["stop_reason"] = "exhausted"
     except Exception as e:
-        click.echo(f"Error: Could not fetch thread '{post_id}': {e}", err=True)
-        sys.exit(EXIT_ERROR)
-
-    order = result.get("order", [])
-    posts_map = result.get("posts", {})
-
-    posts = [posts_map[pid] for pid in order if pid in posts_map]
+        report.fail("thread", e)
+        source["stop_reason"] = "failure"
+        posts = []
     posts.sort(key=lambda p: p.get("create_at", 0))
 
     # Apply --since filter (keep root + replies after since)
@@ -158,7 +167,10 @@ def thread(state, post_id, limit, since):
     # Apply --limit (keep root + last N-1 replies). 0 = no limit.
     if limit and limit > 0 and len(posts) > limit:
         root = posts[0]
-        posts = [root] + posts[-(limit - 1):]
+        posts = [root] + (posts[-(limit - 1):] if limit > 1 else [])
+        source["stop_reason"] = "limit"
+
+    source["returned"] = len(posts)
 
     _user_map, authors = resolve_authors(resolver, posts)
 

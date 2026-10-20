@@ -6,18 +6,20 @@ from collections import defaultdict
 
 import click
 
+from ..coverage import current_coverage, retrieval_command
 from ..cli import get_context, main, pass_state
 from ..client import EXIT_ERROR
 from ..formatters import enrich_posts, format_post_md
-from ..helpers import fetch_root_context, resolve_authors, search_mentions
+from ..helpers import fetch_root_context, resolve_authors, search_mentions, search_posts
 from ..resolve import Resolver
 from ..time_utils import parse_since
 
 
 @main.command()
 @click.option("--since", "since", default="1d", show_default=True, help="Show mentions since (1h, 2d, today, 0 for all).")
-@click.option("--limit", "limit", default=30, type=int, show_default=True, help="Max results.")
+@click.option("--limit", "limit", default=30, type=click.IntRange(min=0), show_default=True, help="Max results. 0 for all.")
 @pass_state
+@retrieval_command
 def mentions(state, since, limit):
     """Show recent posts that mention you. Defaults to last 24h."""
     ctx = get_context(state)
@@ -31,6 +33,7 @@ def mentions(state, since, limit):
             click.echo(f"Error: {e}", err=True)
             sys.exit(EXIT_ERROR)
 
+    current_coverage.get().scope["since_ms"] = since_ms
     mentions_raw = search_mentions(ctx, since_ms, limit)
 
     posts_only = [p for p, _ in mentions_raw]
@@ -80,8 +83,9 @@ def mentions(state, since, limit):
 
 @main.command()
 @click.argument("query")
-@click.option("--limit", "limit", default=30, type=int, show_default=True, help="Max results.")
+@click.option("--limit", "limit", default=30, type=click.IntRange(min=0), show_default=True, help="Max results. 0 for all.")
 @pass_state
+@retrieval_command
 def search(state, query, limit):
     """Search messages across all teams.
 
@@ -91,24 +95,7 @@ def search(state, query, limit):
     ctx = get_context(state)
     resolver = Resolver(ctx.driver, ctx.user_id)
 
-    all_posts = []
-    for team in ctx.teams:
-        result = ctx.driver.posts.search_for_team_posts(team.id, {"terms": query, "is_or_search": False})
-        order = result.get("order", [])
-        posts_map = result.get("posts", {})
-
-        for pid in order:
-            if pid in posts_map:
-                all_posts.append((posts_map[pid], team.display_name))
-
-    seen_ids = set()
-    deduped = []
-    all_posts.sort(key=lambda pt: pt[0].get("create_at", 0), reverse=True)
-    for p, t in all_posts:
-        if p["id"] not in seen_ids:
-            seen_ids.add(p["id"])
-            deduped.append((p, t))
-    deduped = deduped[:limit]
+    deduped = search_posts(ctx, query, limit)
 
     posts_only = [p for p, _ in deduped]
     team_by_post = {p["id"]: t for p, t in deduped}
